@@ -3,3 +3,4 @@ pandas
 deep-translator
 requests
 matplotlib
+jinja2
