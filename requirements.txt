@@ -1,5 +1,6 @@
 streamlit
 pandas
+beautifulsoup4
+plotly
 deep-translator
-requests
-matplotlib
+openpyxl
