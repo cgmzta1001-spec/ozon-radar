@@ -3,11 +3,8 @@ import pandas as pd
 import random
 import requests
 from deep_translator import GoogleTranslator
-
-# --- 🛠️ 补丁 1: 防止 Matplotlib 导致白屏 ---
-# 必须在导入 pandas 之前或刚开始时设置后端为 'Agg'
 import matplotlib
-matplotlib.use('Agg') 
+matplotlib.use('Agg') # 防白屏补丁
 
 # --- 1. 页面配置 ---
 st.set_page_config(page_title="Ozon 选品雷达 (Pro)", page_icon="📡", layout="wide")
@@ -21,7 +18,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 3. 🔐 密码保护 (防崩溃版) ---
+# --- 3. 🔐 密码保护 ---
 def check_password():
     if "password_correct" not in st.session_state:
         st.session_state.password_correct = False
@@ -30,12 +27,10 @@ def check_password():
         st.markdown("### 🔐 内部系统登录")
         password = st.text_input("请输入访问密码", type="password")
         if st.button("登录"):
-            # --- 🛠️ 补丁 2: 安全读取 Secrets ---
-            # 使用 .get() 防止因为忘记配置 Secrets 而直接白屏报错
             try:
                 correct_password = st.secrets.get("MY_PASSWORD", "888888")
             except FileNotFoundError:
-                correct_password = "888888" # 如果没配置，默认密码 888888
+                correct_password = "888888"
             
             if password == correct_password:
                 st.session_state.password_correct = True
@@ -47,7 +42,7 @@ def check_password():
 check_password()
 
 # ==========================================
-# 👇 核心逻辑：数据获取与分析
+# 👇 核心逻辑
 # ==========================================
 
 class OzonAnalyzer:
@@ -65,7 +60,6 @@ class OzonAnalyzer:
         url = "https://ozon-scraper-api.p.rapidapi.com/v1/search"
         querystring = {"text": keyword, "page": "1"}
 
-        # 安全读取 API Key
         try:
             api_key = st.secrets.get("RAPIDAPI_KEY", "")
         except:
@@ -132,14 +126,12 @@ class OzonAnalyzer:
         return data
 
     def get_data(self, keyword):
-        # 优先尝试真实数据
         real_data = self.get_real_data_from_api(keyword)
         if real_data and len(real_data) > 0:
             st.toast("✅ 已连接 Ozon 实时数据", icon="☁️")
             return real_data
         
-        # 失败则使用模拟数据
-        st.toast("⚠️ 使用演示数据模式 (API 未配置或耗尽)", icon="💻")
+        st.toast("⚠️ 使用演示数据模式", icon="💻")
         return self.get_mock_data(keyword)
 
 # --- 4. 爆款评分逻辑 ---
@@ -169,7 +161,7 @@ with col2:
 with st.sidebar:
     st.header("💰 成本模型")
     exchange = st.number_input("汇率 (CNY/RUB)", value=0.075, format="%.4f")
-    cost = st.number_input("采购+运费 (CNY)", value=40.0)
+    cost = st.number_input("采购+运费 (CNY)", value=50.0)
     fee_percent = st.slider("平台费率 (%)", 10, 40, 15) / 100
 
 if start_btn:
@@ -184,9 +176,11 @@ if start_btn:
             st.error("❌ 未找到数据，请稍后重试。")
             st.stop()
 
-        # 计算利润
+        # 💰 计算利润核心公式
         df['价格 (CNY)'] = df['price_rub'] * exchange
-        df['ROI (%)'] = ((df['价格 (CNY)'] * (1 - fee_percent) - cost) / cost) * 100
+        # 净利润 = 售价(转人民币) * (1-佣金) - 成本
+        df['净利润 (CNY)'] = df['价格 (CNY)'] * (1 - fee_percent) - cost
+        df['ROI (%)'] = (df['净利润 (CNY)'] / cost) * 100
         
         # 翻译与评分
         df['中文标题'] = df['title_origin'].apply(analyzer.translate)
@@ -204,16 +198,16 @@ if start_btn:
 
         st.subheader("📋 全量选品矩阵表")
 
-        # --- 🛠️ 补丁 3: 安全渲染矩阵图 ---
         try:
-            # 这里就是原来的红绿矩阵图功能
             st.dataframe(
-                df.style.background_gradient(subset=['爆款分', 'ROI (%)'], cmap="RdYlGn", vmin=0, vmax=100),
+                df.style.background_gradient(subset=['爆款分', '净利润 (CNY)'], cmap="RdYlGn", vmin=0, vmax=100),
                 column_config={
                     "中文标题": st.column_config.TextColumn("商品名称", width="medium"),
                     "price_rub": st.column_config.NumberColumn("卢布价", format="₽%d"),
                     "reviews": st.column_config.NumberColumn("评价数"),
                     "rating": st.column_config.NumberColumn("评分", format="%.1f ⭐"),
+                    # 👇 新增：利润列
+                    "净利润 (CNY)": st.column_config.NumberColumn("预计利润", format="¥%.1f"),
                     "ROI (%)": st.column_config.NumberColumn("ROI", format="%.0f%%"),
                     "爆款分": st.column_config.ProgressColumn("推荐指数", min_value=0, max_value=100),
                     "link": st.column_config.LinkColumn("链接"),
@@ -222,7 +216,6 @@ if start_btn:
                 hide_index=True
             )
         except Exception as e:
-            # 如果上色失败，自动降级为普通表格（防止白屏）
             st.error(f"矩阵图渲染失败，已切换普通模式: {e}")
             st.dataframe(df)
 
