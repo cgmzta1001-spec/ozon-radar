@@ -1,29 +1,26 @@
 import streamlit as st
 import pandas as pd
-import random
-import requests
 import re
+from bs4 import BeautifulSoup
+import plotly.express as px
+import plotly.graph_objects as go
 from collections import Counter
 from deep_translator import GoogleTranslator
-import matplotlib
-import matplotlib.pyplot as plt
 
-# 🛠️ 强制后台画图 (防白屏)
-matplotlib.use('Agg')
+# --- 1. 页面配置 (SaaS 风格) ---
+st.set_page_config(page_title="Ozon Seerfar (终极离线版)", page_icon="🦁", layout="wide")
 
-# --- 1. 页面配置 ---
-st.set_page_config(page_title="Ozon 选品雷达 (RapidAPI版)", page_icon="⚡", layout="wide")
+# 自定义 CSS：让界面更紧凑专业
 st.markdown("""
     <style>
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-    .stMetric {background-color: #f0f2f6; padding: 15px; border-radius: 10px; text-align: center;}
+    .main {background-color: #f4f6f9;}
+    .stMetric {background-color: white; padding: 10px; border-radius: 8px; border: 1px solid #e0e0e0;}
+    h1, h2, h3 {font-family: 'Sans-serif';}
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 核心功能类 ---
-class OzonAnalyzer:
+# --- 2. 核心解析引擎 (源码分析) ---
+class OzonUltimateEngine:
     def __init__(self):
         self.translator = GoogleTranslator(source='auto', target='zh-CN')
 
@@ -33,178 +30,209 @@ class OzonAnalyzer:
         except:
             return text
 
-    # 🔥 核心修改：适配 RapidAPI (JSON 模式)
-    def get_real_data(self, keyword):
-        # 1. 检查 Key
-        api_key = st.secrets.get("RAPIDAPI_KEY", "")
-        if not api_key or "YOUR" in api_key: return None 
+    def extract_keywords(self, titles):
+        # SEO 关键词提取逻辑
+        text = " ".join(titles).lower()
+        text = re.sub(r'[^\w\s]', '', text)
+        words = text.split()
+        stop_words = {'the', 'for', 'and', 'with', 'ozon', 'pro', 'set', 'new', 'pcs', 'cm', 'mm', 'black', 'white'}
+        filtered = [w for w in words if w not in stop_words and len(w) > 2 and not w.isdigit()]
+        return Counter(filtered).most_common(15)
 
-        # 2. 配置 RapidAPI (这里使用通用的 Ozon Scraper)
-        url = "https://ozon-scraper-api.p.rapidapi.com/v1/search"
+    def parse_html(self, html_content):
+        soup = BeautifulSoup(html_content, 'html.parser')
+        items = []
         
-        headers = {
-            "X-RapidAPI-Key": api_key,
-            "X-RapidAPI-Host": "ozon-scraper-api.p.rapidapi.com"
-        }
+        # 核心解析逻辑：寻找商品卡片
+        links = soup.find_all('a', href=re.compile(r'/product/'))
+        seen_urls = set()
         
-        params = {
-            "text": keyword,
-            "page": "1"
-        }
-
-        try:
-            # 发送请求 (JSON 接口通常 1-3 秒就返回)
-            response = requests.get(url, headers=headers, params=params, timeout=15)
+        for link in links:
+            url = link.get('href')
+            if not url or 'ozon.ru' in url or url in seen_urls: continue
             
-            if response.status_code != 200:
-                # 如果报错，打印一下方便调试
-                print(f"API Error: {response.status_code}")
-                return None
+            # 向上找父容器
+            card = link.find_parent('div')
+            found_data = False
             
-            data = response.json()
-            items = []
-            
-            # 3. 解析 JSON (比 HTML 简单且精准)
-            # 注意：不同的 RapidAPI 服务商返回结构不同，这是最常见的结构
-            raw_items = data.get('items', [])
-            
-            for item in raw_items:
-                try:
-                    # 价格解析 (有些接口放在 price.amount，有些直接是 price)
-                    price = item.get('price', {}).get('amount', 0)
-                    if price == 0: price = item.get('price_rub', 0) # 备用字段
-                    
-                    # 评价数解析
-                    reviews = item.get('rating', {}).get('count', 0)
-                    rating = float(item.get('rating', {}).get('average', 0.0))
-                    
-                    # 标题
-                    title = item.get('title', '未知商品')
-                    
-                    items.append({
-                        "title_origin": title,
-                        "price_rub": float(price),
-                        "reviews": int(reviews),
-                        "rating": rating,
-                        "link": item.get('url', f"https://www.ozon.ru/search/?text={keyword}"),
-                        "is_real": True
-                    })
-                except:
-                    continue
-                    
-            return items
-        except Exception as e:
-            print(f"Parsing Error: {e}")
-            return None
+            # 向上遍历寻找数据
+            for _ in range(6):
+                if not card: break
+                text_blob = card.get_text(separator=" ")
+                
+                # 1. 找价格 (123 ₽)
+                price_match = re.search(r'([\d\s]+)\s?₽', text_blob)
+                if price_match:
+                    try:
+                        price_str = price_match.group(1).replace(' ', '').replace('\xa0', '').replace('\u2009', '')
+                        price = float(price_str)
+                        if price < 50: break # 过滤无效价格
+                        
+                        # 2. 找评价数
+                        reviews = 0
+                        rev_match = re.search(r'(\d+)\s?(otz|rev|отз)', text_blob, re.IGNORECASE)
+                        if rev_match:
+                            reviews = int(rev_match.group(1))
+                        else:
+                            # 备用：括号里的数字
+                            sub_match = re.search(r'\(([\d\s]+)\)', text_blob)
+                            if sub_match:
+                                try: reviews = int(sub_match.group(1).replace(' ', ''))
+                                except: pass
 
-    def get_mock_data(self, keyword):
-        data = []
-        base = random.randint(500, 3000)
-        for i in range(20):
-            price = max(100, base + random.randint(-500, 1500))
-            data.append({
-                "title_origin": f"[模拟] {keyword} 样式{chr(65+i)} Pro Max",
-                "price_rub": price,
-                "reviews": random.randint(10, 2000),
-                "rating": round(random.uniform(3.0, 5.0), 1),
-                "link": "https://www.ozon.ru",
-                "is_real": False
-            })
-        return data
+                        # 3. 找标题
+                        title = "Ozon 商品"
+                        img_tag = card.find('img')
+                        if img_tag and img_tag.get('alt'):
+                            title = img_tag.get('alt')
+                        elif len(link.get_text()) > 5:
+                            title = link.get_text(strip=True)
 
-# --- 3. 辅助分析函数 ---
-def extract_keywords(titles):
-    text = " ".join(titles).lower()
-    text = re.sub(r'[^\w\s]', '', text)
-    words = text.split()
-    stop_words = {'the', 'for', 'and', 'with', 'ozon', '模拟', 'pro', 'set', 'new', 'cm', 'pcs'}
-    filtered = [w for w in words if w not in stop_words and len(w) > 2]
-    return Counter(filtered).most_common(10)
+                        # 4. Seerfar 销量预估算法 (核心)
+                        # 假设：每10-15个销量产生1个评价 (留评率约7%) + 基础权重
+                        est_sales = int(reviews * 0.15) + 10
+                        if est_sales > 2000: est_sales = 2000 # 封顶
+                        est_gmv = est_sales * price
 
-# --- 4. 界面逻辑 ---
-st.title("⚡ Ozon 选品雷达 (RapidAPI 极速版)")
-st.caption("数据源: RapidAPI (JSON) | 状态: 🚀 高速连接中")
+                        full_url = url if url.startswith('http') else f"https://www.ozon.ru{url}"
+                        seen_urls.add(url)
+                        
+                        items.append({
+                            "title_origin": title,
+                            "price_rub": price,
+                            "reviews": reviews,
+                            "est_sales": est_sales,
+                            "est_gmv": est_gmv,
+                            "link": full_url
+                        })
+                        found_data = True
+                        break
+                    except: pass
+                card = card.parent
+                if found_data: break
+        return items
 
-# 侧边栏
+# --- 3. 侧边栏配置 ---
 with st.sidebar:
-    st.header("⚙️ 参数配置")
-    keyword = st.text_input("🔍 搜索关键词", "crochet bag")
-    st.markdown("---")
-    st.header("💰 利润模型")
+    st.title("🦁 Seerfar 离线版")
+    st.caption("源码解析 | 利润计算 | 趋势分析")
+    
+    st.markdown("### 💰 利润模型")
     ex_rate = st.number_input("汇率 (CNY/RUB)", 0.075, format="%.4f")
-    cost_cny = st.number_input("采购成本 (¥)", 40.0)
-    fee = st.slider("平台佣金 (%)", 10, 40, 15) / 100
+    cost_cny = st.number_input("采购+运费 (¥)", 45.0)
+    fee = st.slider("费率+广告 (%)", 10, 50, 20) / 100
+    
+    st.info("💡 **使用方法**：\n1. 电脑打开 Ozon 搜索关键词\n2. 右键 -> 查看网页源代码\n3. 全选复制 -> 粘贴到右侧")
 
-if st.button("🚀 极速挖掘", type="primary", use_container_width=True):
+# --- 4. 主界面逻辑 ---
+st.header("1️⃣ 数据导入")
+html_input = st.text_area("👇 请粘贴 Ozon 网页源代码 (HTML)", height=100, placeholder="<div ...>")
+
+if st.button("🚀 启动 Seerfar 级分析", type="primary", use_container_width=True):
+    if not html_input:
+        st.error("请先粘贴源代码！")
+        st.stop()
+        
+    engine = OzonUltimateEngine()
     
-    analyzer = OzonAnalyzer()
-    
-    with st.spinner("⚡ 正在通过 API 获取精准数据..."):
-        # 1. 获取数据
-        raw = analyzer.get_real_data(keyword)
-        if not raw:
-            raw = analyzer.get_mock_data(keyword)
-            is_mock = True
-            st.toast("⚠️ API 连接未成功，已切换演示数据", icon="💻")
-        else:
-            is_mock = False
-            st.toast("✅ 成功获取真实数据！", icon="🎉")
+    with st.spinner("🕵️ 正在解剖代码、估算销量、挖掘关键词..."):
+        raw_data = engine.parse_html(html_input)
+        
+        if not raw_data:
+            st.error("⚠️ 解析失败！请确保您粘贴的是【Ozon 搜索结果页】的完整源代码。")
+            st.stop()
             
-        df = pd.DataFrame(raw)
-
-        # 2. 计算
+        df = pd.DataFrame(raw_data)
+        
+        # --- 全维度计算 ---
         df['价格 (¥)'] = df['price_rub'] * ex_rate
         df['净利润 (¥)'] = df['价格 (¥)'] * (1 - fee) - cost_cny
         df['ROI (%)'] = (df['净利润 (¥)'] / cost_cny) * 100
         
-        # 3. 评分
+        # 爆款分计算
         df['爆款分'] = 0
         df.loc[df['ROI (%)'] > 30, '爆款分'] += 40
-        df.loc[df['reviews'] > 100, '爆款分'] += 30
+        df.loc[df['est_sales'] > 50, '爆款分'] += 30
+        df.loc[df['reviews'] < 50, '爆款分'] += 20 # 新品加权
         
-        # 4. 翻译
-        df['中文标题'] = df['title_origin'].apply(analyzer.translate)
-        df = df.sort_values("爆款分", ascending=False)
+        # 翻译 (只翻译前30个，防止卡顿)
+        df['中文标题'] = df['title_origin'].head(30).apply(lambda x: engine.translate(x[:40]))
+        # 剩下的用原文填充
+        df['中文标题'].fillna(df['title_origin'], inplace=True)
+        
+        st.success(f"✅ 成功提取 {len(df)} 个商品，分析完成！")
 
-    # === 仪表板 ===
+    # === 📊 模块 1: 市场大盘 (Seerfar 风格) ===
     st.divider()
     m1, m2, m3, m4 = st.columns(4)
-    if not df.empty:
-        m1.metric("平均售价", f"₽{int(df['price_rub'].mean())}")
-        m2.metric("平均 ROI", f"{int(df['ROI (%)'].mean())}%")
-        m3.metric("最高利润", f"¥{int(df['净利润 (¥)'].max())}")
-        m4.metric("数据来源", "RapidAPI" if not is_mock else "模拟演示")
+    m1.metric("总盘子 (GMV)", f"₽{int(df['est_gmv'].sum()/1000)}k", help="搜索页预估总销售额")
+    m2.metric("平均 ROI", f"{int(df['ROI (%)'].mean())}%", delta_color="normal")
+    m3.metric("头部商品销量", f"{int(df['est_sales'].max())} 单")
+    m4.metric("盈利商品占比", f"{len(df[df['净利润 (¥)']>0]) / len(df) * 100:.0f}%")
 
-    # === 功能 Tabs ===
-    tab1, tab2, tab3 = st.tabs(["📋 选品矩阵", "📊 市场图表", "🧠 SEO 分析"])
+    # === 📈 模块 2: 高级图表 Tabs ===
+    tab1, tab2, tab3, tab4 = st.tabs(["💎 蓝海机会图", "🧠 SEO 关键词", "📋 选品矩阵表", "📊 垄断分析"])
 
     with tab1:
-        st.subheader("全量商品数据")
+        st.markdown("**Seerfar 核心视图：寻找「低评高销」的蓝海品**")
+        fig = px.scatter(
+            df,
+            x="reviews",
+            y="price_rub",
+            size="est_sales",     # 气泡大小 = 预估销量
+            color="ROI (%)",      # 颜色 = 利润率
+            hover_data=["中文标题", "净利润 (¥)"],
+            color_continuous_scale="RdYlGn",
+            labels={"reviews": "评价数 (越少越好)", "price_rub": "售价 (卢布)", "est_sales": "预估月销"},
+            title="气泡越大销量越高，位置越左评价越少 (左上角/左下角为机会区)"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with tab2:
+        st.markdown("**🔑 爆款标题 SEO 词频分析**")
+        keywords = engine.extract_keywords(df['title_origin'].tolist())
+        kw_df = pd.DataFrame(keywords, columns=['单词', '出现频次'])
+        
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            st.bar_chart(kw_df.set_index('单词'))
+        with c2:
+            st.write("🔥 **高频热词 Top 10**")
+            st.table(kw_df.head(10))
+
+    with tab3:
+        st.markdown("**📋 全量选品矩阵 (带热力图)**")
+        
+        # 过滤器
+        min_roi = st.slider("只显示 ROI 大于多少的产品?", 0, 100, 0)
+        show_df = df[df['ROI (%)'] >= min_roi].sort_values("爆款分", ascending=False)
+        
+        # 👇 您要的矩阵图回来了！
         st.dataframe(
-            df.style.background_gradient(subset=['净利润 (¥)', 'ROI (%)'], cmap="RdYlGn"),
+            show_df.style.background_gradient(subset=['爆款分', '净利润 (¥)', 'ROI (%)', 'est_sales'], cmap="RdYlGn"),
             column_config={
-                "中文标题": st.column_config.TextColumn("商品名称", width="medium"),
+                "中文标题": st.column_config.TextColumn("商品", width="medium"),
                 "price_rub": st.column_config.NumberColumn("卢布价", format="₽%d"),
+                "reviews": st.column_config.NumberColumn("评价数"),
+                "est_sales": st.column_config.ProgressColumn("预估月销", format="%d", min_value=0, max_value=max(df['est_sales'])),
                 "净利润 (¥)": st.column_config.NumberColumn("净利", format="¥%.1f"),
                 "ROI (%)": st.column_config.NumberColumn("ROI", format="%.0f%%"),
                 "link": st.column_config.LinkColumn("链接"),
             },
-            use_container_width=True
+            use_container_width=True,
+            hide_index=True
         )
-        # 下载按钮
-        csv = df.to_csv(index=False).encode('utf-8-sig')
-        st.download_button("📥 导出 Excel", data=csv, file_name=f'ozon_{keyword}.csv', mime='text/csv')
+        
+        # 👇 导出功能也保留了
+        csv = show_df.to_csv(index=False).encode('utf-8-sig')
+        st.download_button("📥 导出数据到 Excel", data=csv, file_name='ozon_seerfar_analysis.csv', mime='text/csv')
 
-    with tab2:
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("**💰 价格分布**")
-            st.bar_chart(df['price_rub'].value_counts(bins=5).sort_index())
-        with c2:
-            st.markdown("**💎 蓝海寻找 (价格 vs 评价)**")
-            st.scatter_chart(df, x='price_rub', y='reviews', color='ROI (%)')
-
-    with tab3:
-        st.markdown("**🔑 爆款标题热词**")
-        kw_df = pd.DataFrame(extract_keywords(df['title_origin'].tolist()), columns=['词', '频次'])
-        st.bar_chart(kw_df.set_index('词'))
+    with tab4:
+        st.markdown("**🍰 市场垄断度分析**")
+        col_1, col_2 = st.columns(2)
+        with col_1:
+            fig_pie = px.pie(df.head(10), values='est_sales', names='中文标题', title="Top 10 商品销量占比")
+            st.plotly_chart(fig_pie, use_container_width=True)
+        with col_2:
+            fig_hist = px.histogram(df, x="price_rub", y="est_sales", nbins=10, title="哪个价格段销量最大？")
+            st.plotly_chart(fig_hist, use_container_width=True)
