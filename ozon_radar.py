@@ -3,48 +3,33 @@ import pandas as pd
 import random
 import requests
 from deep_translator import GoogleTranslator
+# 👇 必须加这一句，防止服务器报错
 import matplotlib
-matplotlib.use('Agg') # 防白屏补丁
+matplotlib.use('Agg') 
 
 # --- 1. 页面配置 ---
 st.set_page_config(page_title="Ozon 选品雷达 (Pro)", page_icon="📡", layout="wide")
+st.markdown("""<style>#MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}</style>""", unsafe_allow_html=True)
 
-# --- 2. 隐藏菜单 (美化) ---
-st.markdown("""
-    <style>
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-    </style>
-    """, unsafe_allow_html=True)
-
-# --- 3. 🔐 密码保护 ---
+# --- 2. 🔐 密码与 Secrets ---
 def check_password():
     if "password_correct" not in st.session_state:
         st.session_state.password_correct = False
-
     if not st.session_state.password_correct:
         st.markdown("### 🔐 内部系统登录")
-        password = st.text_input("请输入访问密码", type="password")
+        pwd = st.text_input("密码", type="password")
         if st.button("登录"):
-            try:
-                correct_password = st.secrets.get("MY_PASSWORD", "888888")
-            except FileNotFoundError:
-                correct_password = "888888"
-            
-            if password == correct_password:
+            # 容错处理：如果没有配置 Secrets，默认密码 888888
+            correct = st.secrets.get("MY_PASSWORD", "888888")
+            if pwd == correct:
                 st.session_state.password_correct = True
                 st.rerun()
             else:
-                st.error("❌ 密码错误")
+                st.error("密码错误")
         st.stop()
-
 check_password()
 
-# ==========================================
-# 👇 核心逻辑
-# ==========================================
-
+# --- 3. 核心功能类 ---
 class OzonAnalyzer:
     def __init__(self):
         self.translator = GoogleTranslator(source='auto', target='zh-CN')
@@ -55,168 +40,126 @@ class OzonAnalyzer:
         except:
             return text
 
-    # --- 🟢 获取真实数据 ---
-    def get_real_data_from_api(self, keyword):
-        url = "https://ozon-scraper-api.p.rapidapi.com/v1/search"
-        querystring = {"text": keyword, "page": "1"}
-
-        try:
-            api_key = st.secrets.get("RAPIDAPI_KEY", "")
-        except:
-            api_key = ""
-        
-        if not api_key or "替换" in api_key:
+    def get_real_data(self, keyword):
+        # 尝试从 Secrets 获取 Key
+        api_key = st.secrets.get("RAPIDAPI_KEY", "")
+        # 如果 Key 是空的，或者含有默认提示语，直接返回 None (切换模拟数据)
+        if not api_key or "替换" in api_key or "YOUR" in api_key:
             return None 
 
+        url = "https://ozon-scraper-api.p.rapidapi.com/v1/search"
         headers = {
             "X-RapidAPI-Key": api_key,
             "X-RapidAPI-Host": "ozon-scraper-api.p.rapidapi.com"
         }
-
         try:
-            response = requests.get(url, headers=headers, params=querystring, timeout=15)
-            if response.status_code != 200:
-                return None
+            # 联网请求
+            response = requests.get(url, headers=headers, params={"text": keyword, "page": "1"}, timeout=15)
+            if response.status_code != 200: return None
             
-            json_data = response.json()
+            data = response.json()
             items = []
-            raw_items = json_data.get('items', [])
-            
-            for item in raw_items:
-                try:
-                    title = item.get('title', '未知商品')
-                    price = item.get('price', {}).get('amount', 0)
-                    if price == 0: price = item.get('price_rub', 0)
-                    
-                    reviews = item.get('rating', {}).get('count', 0)
-                    rating = item.get('rating', {}).get('average', 0.0)
-                    link = item.get('url', f"https://www.ozon.ru/search/?text={keyword}")
-
-                    items.append({
-                        "title_origin": title,
-                        "price_rub": float(price),
-                        "reviews": int(reviews),
-                        "rating": float(rating),
-                        "link": link,
-                        "is_real": True
-                    })
-                except:
-                    continue
+            for item in data.get('items', []):
+                price = item.get('price', {}).get('amount', 0)
+                if price == 0: price = item.get('price_rub', 0)
+                items.append({
+                    "title_origin": item.get('title', '未知'),
+                    "price_rub": float(price),
+                    "reviews": int(item.get('rating', {}).get('count', 0)),
+                    "rating": float(item.get('rating', {}).get('average', 0.0)),
+                    "link": item.get('url', f"https://www.ozon.ru/search/?text={keyword}"),
+                    "is_real": True
+                })
             return items
         except:
             return None
 
-    # --- 🟡 生成模拟数据 ---
     def get_mock_data(self, keyword):
+        # 生成模拟数据
         data = []
-        base_price = random.randint(500, 3000)
-        nouns = [keyword, f"Premium {keyword}", f"{keyword} Set", f"New {keyword}"]
-        
-        for i in range(15):
-            price = max(100, base_price + random.randint(-200, 500))
-            item = {
-                "title_origin": f"[模拟] {random.choice(nouns)} #{i+1} (演示数据)",
-                "price_rub": price,
-                "reviews": random.randint(0, 1500),
+        base = random.randint(500, 3000)
+        for i in range(10):
+            data.append({
+                "title_origin": f"[模拟] {keyword} 示例商品 {i+1}",
+                "price_rub": base + random.randint(-200, 500),
+                "reviews": random.randint(0, 1000),
                 "rating": round(random.uniform(3.5, 5.0), 1),
-                "link": f"https://www.ozon.ru/search/?text={keyword}",
+                "link": "https://www.ozon.ru",
                 "is_real": False
-            }
-            data.append(item)
+            })
         return data
 
-    def get_data(self, keyword):
-        real_data = self.get_real_data_from_api(keyword)
-        if real_data and len(real_data) > 0:
-            st.toast("✅ 已连接 Ozon 实时数据", icon="☁️")
-            return real_data
-        
-        st.toast("⚠️ 使用演示数据模式", icon="💻")
-        return self.get_mock_data(keyword)
-
-# --- 4. 爆款评分逻辑 ---
-def analyze_potential(row):
-    score = 0
-    if row['ROI (%)'] >= 50: score += 40
-    elif row['ROI (%)'] >= 30: score += 30
-    
-    if row['reviews'] > 500: score += 30
-    elif row['reviews'] > 50: score += 20
-    
-    if 4.5 >= row['rating'] >= 3.8: score += 30
-    return score
-
-# ==========================================
-# 👇 界面 UI
-# ==========================================
-
-st.title("🔥 Ozon 选品雷达 (Pro)")
+# --- 4. 界面逻辑 ---
+st.title("🔥 Ozon 选品雷达 (利润热力版)")
 
 col1, col2 = st.columns([3, 1])
-with col1:
-    keyword = st.text_input("请输入产品关键词 (英文)", "crochet bag")
-with col2:
-    start_btn = st.button("🚀 开始挖掘", type="primary", use_container_width=True)
-
-with st.sidebar:
-    st.header("💰 成本模型")
-    exchange = st.number_input("汇率 (CNY/RUB)", value=0.075, format="%.4f")
-    cost = st.number_input("采购+运费 (CNY)", value=50.0)
-    fee_percent = st.slider("平台费率 (%)", 10, 40, 15) / 100
-
-if start_btn:
-    analyzer = OzonAnalyzer()
+keyword = col1.text_input("关键词", "crochet bag")
+if col2.button("🚀 开始挖掘", type="primary", use_container_width=True):
     
-    with st.spinner("正在扫描全网数据..."):
-        # 获取数据
-        raw_data = analyzer.get_data(keyword)
-        df = pd.DataFrame(raw_data)
+    with st.spinner("正在分析数据..."):
+        # 1. 获取数据
+        app = OzonAnalyzer()
+        raw = app.get_real_data(keyword)
         
-        if df.empty:
-            st.error("❌ 未找到数据，请稍后重试。")
-            st.stop()
-
-        # 💰 计算利润核心公式
-        df['价格 (CNY)'] = df['price_rub'] * exchange
-        # 净利润 = 售价(转人民币) * (1-佣金) - 成本
-        df['净利润 (CNY)'] = df['价格 (CNY)'] * (1 - fee_percent) - cost
-        df['ROI (%)'] = (df['净利润 (CNY)'] / cost) * 100
-        
-        # 翻译与评分
-        df['中文标题'] = df['title_origin'].apply(analyzer.translate)
-        df['爆款分'] = df.apply(analyze_potential, axis=1)
-        
-        # 排序
-        df = df.sort_values(by='爆款分', ascending=False)
-        
-        # 展示结果
-        st.divider()
-        if df.iloc[0]['is_real']:
-            st.success(f"📊 分析完成：找到 {len(df)} 个真实竞品")
+        # 自动降级逻辑
+        if not raw:
+            raw = app.get_mock_data(keyword)
+            st.toast("⚠️ 正在使用演示数据 (未连接 API 或 额度耗尽)", icon="💻")
         else:
-            st.warning(f"⚠️ 分析完成：显示 {len(df)} 个模拟演示商品")
+            st.toast("✅ 已获取真实实时数据", icon="☁️")
+            
+        df = pd.DataFrame(raw)
 
-        st.subheader("📋 全量选品矩阵表")
+        # 2. 读取侧边栏参数 (放在这里防止重跑)
+        with st.sidebar:
+            st.header("💰 利润计算器")
+            ex_rate = st.number_input("汇率", value=0.075, format="%.4f")
+            cost_cny = st.number_input("成本 (¥)", value=40.0)
+            fee = st.slider("费率 (%)", 10, 40, 15) / 100
 
+        # 3. 计算指标
+        df['价格 (¥)'] = df['price_rub'] * ex_rate
+        df['净利润 (¥)'] = df['价格 (¥)'] * (1 - fee) - cost_cny
+        df['ROI'] = (df['净利润 (¥)'] / cost_cny) * 100
+        
+        # 评分
+        def get_score(row):
+            s = 0
+            if row['ROI'] > 30: s += 40
+            if row['reviews'] > 50: s += 30
+            if row['rating'] > 4.0: s += 30
+            return s
+        df['爆款分'] = df.apply(get_score, axis=1)
+        
+        df['中文标题'] = df['title_origin'].apply(app.translate)
+        df = df.sort_values(by="爆款分", ascending=False)
+
+        # 4. 显示热力图 (关键部分)
+        st.divider()
+        st.subheader("📋 利润分析矩阵")
+        
+        # 如果是真实数据，显示绿色成功提示；模拟数据显示黄色警告
+        if df.iloc[0]['is_real']:
+            st.success(f"找到 {len(df)} 个真实竞品")
+        else:
+            st.warning("⚠️ 当前为演示数据模式 (请检查 Secrets 配置以获取真实数据)")
+
+        # 👇 强制渲染热力图
         try:
             st.dataframe(
-                df.style.background_gradient(subset=['爆款分', '净利润 (CNY)'], cmap="RdYlGn", vmin=0, vmax=100),
+                df.style.background_gradient(subset=['爆款分', '净利润 (¥)'], cmap="RdYlGn", vmin=None, vmax=None),
                 column_config={
-                    "中文标题": st.column_config.TextColumn("商品名称", width="medium"),
+                    "中文标题": st.column_config.TextColumn("商品", width="medium"),
                     "price_rub": st.column_config.NumberColumn("卢布价", format="₽%d"),
-                    "reviews": st.column_config.NumberColumn("评价数"),
-                    "rating": st.column_config.NumberColumn("评分", format="%.1f ⭐"),
-                    # 👇 新增：利润列
-                    "净利润 (CNY)": st.column_config.NumberColumn("预计利润", format="¥%.1f"),
-                    "ROI (%)": st.column_config.NumberColumn("ROI", format="%.0f%%"),
-                    "爆款分": st.column_config.ProgressColumn("推荐指数", min_value=0, max_value=100),
+                    "净利润 (¥)": st.column_config.NumberColumn("净利润", format="¥%.1f"),
+                    "ROI": st.column_config.NumberColumn("ROI", format="%.0f%%"),
+                    "爆款分": st.column_config.ProgressColumn("推荐度", min_value=0, max_value=100),
                     "link": st.column_config.LinkColumn("链接"),
                 },
                 use_container_width=True,
                 hide_index=True
             )
         except Exception as e:
-            st.error(f"矩阵图渲染失败，已切换普通模式: {e}")
-            st.dataframe(df)
-
-        st.markdown("---")
+            # 如果还是失败，这次我们会把错误打印出来，方便找原因
+            st.error(f"❌ 热力图加载失败，原因: {e}")
+            st.dataframe(df) # 兜底显示普通表格
