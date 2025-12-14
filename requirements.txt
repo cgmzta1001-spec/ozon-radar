@@ -1,3 +1,5 @@
 streamlit
 pandas
 deep-translator
+requests
+matplotlib
