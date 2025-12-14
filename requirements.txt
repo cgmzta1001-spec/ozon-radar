@@ -3,4 +3,3 @@ pandas
 deep-translator
 requests
 matplotlib
-beautifulsoup4
